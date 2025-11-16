@@ -1,6 +1,5 @@
 #!/bin/bash
-#Author: @zhamrock
-#November 12 2025
+
 ###########################################
 # Vote Account Withdrawal Script
 # Safely withdraws funds from vote account
@@ -252,15 +251,39 @@ echo "========================================="
 
 log_info "Withdrawing $WITHDRAW_AMOUNT SOL from vote account..."
 
-if solana withdraw-from-vote-account "$VOTE_KEYPAIR" "$WITHDRAW_KEYPAIR" "$WITHDRAW_AMOUNT" \
-    --authorized-withdrawer "$WITHDRAW_KEYPAIR" 2>&1 | tee -a "$LOG_FILE"; then
-    log_success "Withdrawal from vote account completed"
-else
-    ERROR_MESSAGE="Failed to withdraw from vote account"
+# Capture both output and exit status
+WITHDRAW_OUTPUT=$(solana withdraw-from-vote-account "$VOTE_KEYPAIR" "$WITHDRAW_KEYPAIR" "$WITHDRAW_AMOUNT" \
+    --authorized-withdrawer "$WITHDRAW_KEYPAIR" 2>&1)
+WITHDRAW_STATUS=$?
+
+# Log the output
+echo "$WITHDRAW_OUTPUT" | tee -a "$LOG_FILE"
+
+# Check if withdrawal was successful
+if [ $WITHDRAW_STATUS -ne 0 ]; then
+    ERROR_MESSAGE="Failed to withdraw from vote account. Exit code: $WITHDRAW_STATUS"
+    log_error "$ERROR_MESSAGE"
+    
+    # Check for specific error patterns
+    if echo "$WITHDRAW_OUTPUT" | grep -q "missing required signature"; then
+        log_error "Missing required signature - check authorized withdrawer permissions"
+    elif echo "$WITHDRAW_OUTPUT" | grep -q "Transaction simulation failed"; then
+        log_error "Transaction simulation failed - check account authorities and balances"
+    fi
+    
+    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE_INITIAL" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
+    exit 1
+fi
+
+# Verify the withdrawal actually succeeded by checking for success indicators
+if ! echo "$WITHDRAW_OUTPUT" | grep -qE "(Signature:|Transaction confirmed)"; then
+    ERROR_MESSAGE="Withdrawal command completed but no confirmation signature found"
     log_error "$ERROR_MESSAGE"
     log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE_INITIAL" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
     exit 1
 fi
+
+log_success "Withdrawal from vote account completed"
 
 # Wait for confirmation
 sleep 2
@@ -289,8 +312,8 @@ log_info "Original keypair: $ORIGINAL_KEYPAIR"
 log_info "Setting withdraw keypair as source..."
 solana config set -k "$WITHDRAW_KEYPAIR" > /dev/null
 
-# Calculate transfer amount (leave some for transaction fees)
-TRANSFER_AMOUNT=$(echo "$WITHDRAW_BALANCE - 0.001" | bc)
+# Calculate transfer amount (leave 0.1 SOL in withdraw account)
+TRANSFER_AMOUNT=$(echo "$WITHDRAW_BALANCE - 0.1" | bc)
 
 if (( $(echo "$TRANSFER_AMOUNT <= 0" | bc -l) )); then
     ERROR_MESSAGE="Insufficient balance in withdraw account for transfer"
@@ -302,15 +325,32 @@ fi
 
 log_info "Transferring $TRANSFER_AMOUNT SOL to target wallet..."
 
-if solana transfer "$TARGET_WALLET" "$TRANSFER_AMOUNT" --allow-unfunded-recipient 2>&1 | tee -a "$LOG_FILE"; then
-    log_success "Transfer to target wallet completed"
-else
-    ERROR_MESSAGE="Failed to transfer to target wallet"
+# Capture both output and exit status
+TRANSFER_OUTPUT=$(solana transfer "$TARGET_WALLET" "$TRANSFER_AMOUNT" --allow-unfunded-recipient 2>&1)
+TRANSFER_STATUS=$?
+
+# Log the output
+echo "$TRANSFER_OUTPUT" | tee -a "$LOG_FILE"
+
+# Check if transfer was successful
+if [ $TRANSFER_STATUS -ne 0 ]; then
+    ERROR_MESSAGE="Failed to transfer to target wallet. Exit code: $TRANSFER_STATUS"
     log_error "$ERROR_MESSAGE"
     log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
     solana config set -k "$ORIGINAL_KEYPAIR" > /dev/null
     exit 1
 fi
+
+# Verify the transfer actually succeeded
+if ! echo "$TRANSFER_OUTPUT" | grep -qE "(Signature:|Transaction confirmed)"; then
+    ERROR_MESSAGE="Transfer command completed but no confirmation signature found"
+    log_error "$ERROR_MESSAGE"
+    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
+    solana config set -k "$ORIGINAL_KEYPAIR" > /dev/null
+    exit 1
+fi
+
+log_success "Transfer to target wallet completed"
 
 # Restore original keypair
 log_info "Restoring original keypair configuration..."
