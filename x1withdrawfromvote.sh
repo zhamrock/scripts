@@ -7,6 +7,10 @@
 
 set -e  # Exit on error
 
+# Set environment variables for cron compatibility
+export TERM=${TERM:-xterm}
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -207,29 +211,29 @@ VOTE_ACCOUNT=$(solana-keygen pubkey "$VOTE_KEYPAIR")
 log_info "Vote Account: $VOTE_ACCOUNT"
 
 # Display initial balances
-VOTE_BALANCE=$(check_balance "$VOTE_KEYPAIR")
+VOTE_BALANCE_INITIAL=$(check_balance "$VOTE_KEYPAIR")
 WITHDRAW_BALANCE=$(check_balance "$WITHDRAW_KEYPAIR")
 TARGET_BALANCE=$(check_balance "$TARGET_WALLET")
 
-printf "%-20s: %s SOL\n" "Vote Account" "$VOTE_BALANCE"
+printf "%-20s: %s SOL\n" "Vote Account" "$VOTE_BALANCE_INITIAL"
 printf "%-20s: %s SOL\n" "Withdraw Account" "$WITHDRAW_BALANCE"
 printf "%-20s: %s SOL\n" "Target Wallet" "$TARGET_BALANCE"
 
 # Validate vote account has sufficient balance
-if (( $(echo "$VOTE_BALANCE <= $VOTE_ACCOUNT_RESERVE" | bc -l) )); then
-    ERROR_MESSAGE="Vote account balance ($VOTE_BALANCE SOL) is not enough to withdraw. Minimum required: $VOTE_ACCOUNT_RESERVE SOL"
+if (( $(echo "$VOTE_BALANCE_INITIAL <= $VOTE_ACCOUNT_RESERVE" | bc -l) )); then
+    ERROR_MESSAGE="Vote account balance ($VOTE_BALANCE_INITIAL SOL) is not enough to withdraw. Minimum required: $VOTE_ACCOUNT_RESERVE SOL"
     log_error "$ERROR_MESSAGE"
-    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE" "0" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
+    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "0" "$VOTE_BALANCE_INITIAL" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
     exit 1
 fi
 
 # Calculate withdrawal amount
-WITHDRAW_AMOUNT=$(echo "$VOTE_BALANCE - $VOTE_ACCOUNT_RESERVE" | bc)
+WITHDRAW_AMOUNT=$(echo "$VOTE_BALANCE_INITIAL - $VOTE_ACCOUNT_RESERVE" | bc)
 
 if (( $(echo "$WITHDRAW_AMOUNT <= 0" | bc -l) )); then
     ERROR_MESSAGE="Calculated withdrawal amount is zero or negative: $WITHDRAW_AMOUNT SOL"
     log_error "$ERROR_MESSAGE"
-    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE" "0" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
+    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "0" "$VOTE_BALANCE_INITIAL" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
     exit 1
 fi
 
@@ -253,7 +257,7 @@ if solana withdraw-from-vote-account "$VOTE_KEYPAIR" "$WITHDRAW_KEYPAIR" "$WITHD
 else
     ERROR_MESSAGE="Failed to withdraw from vote account"
     log_error "$ERROR_MESSAGE"
-    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
+    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE_INITIAL" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
     exit 1
 fi
 
@@ -290,7 +294,7 @@ TRANSFER_AMOUNT=$(echo "$WITHDRAW_BALANCE - 0.001" | bc)
 if (( $(echo "$TRANSFER_AMOUNT <= 0" | bc -l) )); then
     ERROR_MESSAGE="Insufficient balance in withdraw account for transfer"
     log_error "$ERROR_MESSAGE"
-    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
+    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
     solana config set -k "$ORIGINAL_KEYPAIR" > /dev/null
     exit 1
 fi
@@ -302,7 +306,7 @@ if solana transfer "$TARGET_WALLET" "$TRANSFER_AMOUNT" --allow-unfunded-recipien
 else
     ERROR_MESSAGE="Failed to transfer to target wallet"
     log_error "$ERROR_MESSAGE"
-    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
+    log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "FAILED" "$ERROR_MESSAGE"
     solana config set -k "$ORIGINAL_KEYPAIR" > /dev/null
     exit 1
 fi
@@ -328,7 +332,7 @@ printf "%-20s: %s SOL\n" "Withdraw Account" "$WITHDRAW_BALANCE"
 printf "%-20s: %s SOL\n" "Target Wallet" "$TARGET_BALANCE"
 
 # Log to history file
-log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "SUCCESS" ""
+log_withdrawal_history "$RUN_TIMESTAMP" "$VOTE_BALANCE_INITIAL" "$WITHDRAW_AMOUNT" "$VOTE_BALANCE" "$TARGET_BALANCE" "SUCCESS" ""
 
 echo ""
 echo "========================================="
@@ -337,7 +341,7 @@ echo "========================================="
 echo ""
 
 log_info "Withdrawal Summary:"
-log_info "  Vote Balance Before: $VOTE_BALANCE SOL"
+log_info "  Vote Balance Before: $VOTE_BALANCE_INITIAL SOL"
 log_info "  Amount Withdrawn: $WITHDRAW_AMOUNT SOL"
 log_info "  Final Vote Balance: $VOTE_BALANCE SOL"
 log_info "  Final Target Balance: $TARGET_BALANCE SOL"
