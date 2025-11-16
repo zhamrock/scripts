@@ -1,5 +1,6 @@
 #!/bin/bash
-
+#Author: @zhamrock
+#November 12 2025
 ###########################################
 # Vote Account Withdrawal Script
 # Safely withdraws funds from vote account
