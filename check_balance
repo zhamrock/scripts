@@ -1,0 +1,182 @@
+#!/bin/bash
+# =========================
+# Multi-Server Balance Checker
+# =========================
+USERNAME="jhojo"
+RPC_URL="https://rpc.mainnet.x1.xyz"
+SOLANA_PATH="/home/jhojo/.local/share/solana/install/active_release/bin"
+HOSTS_FILE="hosts.txt"
+
+echo "=== Multi-Server Solana Balance Checker ==="
+echo
+
+# Check if hosts file exists
+if [[ ! -f "$HOSTS_FILE" ]]; then
+    echo "ERROR: $HOSTS_FILE not found!"
+    echo "Create a file named 'hosts.txt' with format: node_name ip_address"
+    echo "Example:"
+    echo "  node1 51.79.78.13"
+    echo "  node2 192.168.1.100"
+    exit 1
+fi
+
+# Read password once
+echo -n "Enter SSH password for user $USERNAME: "
+read -s SSHPASS
+echo
+echo
+
+SSH_OPTS="-o StrictHostKeyChecking=no -o LogLevel=ERROR -T -o ConnectTimeout=10"
+
+GRAND_TOTAL_KEYPAIR="0"
+GRAND_TOTAL_STAKE="0"
+GRAND_TOTAL_ALL="0"
+SERVER_COUNT=0
+SUCCESS_COUNT=0
+
+# Read hosts file
+while read -r SERVER_NAME SERVER_IP; do
+    # Skip empty lines and comments
+    [[ -z "$SERVER_NAME" ]] && continue
+    [[ "$SERVER_NAME" =~ ^# ]] && continue
+    
+    ((SERVER_COUNT++))
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "[$SERVER_COUNT] $SERVER_NAME ($SERVER_IP)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Single SSH session to do ALL the work remotely
+    RESULTS=$(sshpass -p "$SSHPASS" ssh $SSH_OPTS "$USERNAME@$SERVER_IP" bash << 'ENDSSH'
+export PATH=/home/jhojo/.local/share/solana/install/active_release/bin:$PATH
+RPC_URL="https://rpc.mainnet.x1.xyz"
+
+# Find all wallets
+WALLETS=$(find /home/jhojo/.config/solana -type f -name '*.json' 2>/dev/null)
+
+if [[ -z "$WALLETS" ]]; then
+    echo "ERROR:NO_WALLETS"
+    exit 1
+fi
+
+TOTAL_KEYPAIR="0"
+TOTAL_STAKE="0"
+WALLET_COUNT=0
+
+# Process each wallet
+while IFS= read -r WALLET; do
+    [[ -z "$WALLET" ]] && continue
+    
+    WALLET_NAME=$(basename "$WALLET")
+    
+    # Get public key
+    PUBKEY=$(solana-keygen pubkey "$WALLET" 2>/dev/null)
+    [[ -z "$PUBKEY" ]] && continue
+    
+    # Get keypair balance
+    BALANCE=$(solana balance "$PUBKEY" --url "$RPC_URL" 2>&1 | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+    [[ -z "$BALANCE" ]] && BALANCE="0"
+    
+    # Add to total
+    TOTAL_KEYPAIR=$(awk "BEGIN {print $TOTAL_KEYPAIR + $BALANCE}")
+    
+    # Check for stake accounts if wallet name contains "stake"
+    STAKE_BAL="0"
+    if [[ "$WALLET_NAME" == *"stake"* ]]; then
+        STAKE_INFO=$(solana stakes "$PUBKEY" --url "$RPC_URL" 2>/dev/null)
+        if [[ -n "$STAKE_INFO" ]]; then
+            STAKE_BAL=$(echo "$STAKE_INFO" | grep "Balance:" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+            if [[ -n "$STAKE_BAL" ]] && [[ "$STAKE_BAL" != "0" ]]; then
+                TOTAL_STAKE=$(awk "BEGIN {print $TOTAL_STAKE + $STAKE_BAL}")
+            else
+                STAKE_BAL="0"
+            fi
+        fi
+    fi
+    
+    # Output each wallet's details
+    echo "WALLET:$WALLET_NAME:$BALANCE:$STAKE_BAL"
+    
+    ((WALLET_COUNT++))
+    
+done <<< "$WALLETS"
+
+# Output totals
+echo "RESULT:$WALLET_COUNT:$TOTAL_KEYPAIR:$TOTAL_STAKE"
+
+ENDSSH
+)
+    
+    # Check for errors
+    if [[ -z "$RESULTS" ]]; then
+        echo "  ❌ Connection failed or timeout"
+        echo
+        continue
+    fi
+    
+    if echo "$RESULTS" | grep -q "ERROR:NO_WALLETS"; then
+        echo "  ⚠️  No wallets found"
+        echo
+        continue
+    fi
+    
+    # Parse results
+    if echo "$RESULTS" | grep -q "^RESULT:"; then
+        # Extract summary line
+        IFS=':' read -r TYPE WALLET_COUNT TOTAL_KEYPAIR TOTAL_STAKE <<< "$(echo "$RESULTS" | grep "^RESULT:")"
+        
+        TOTAL_SERVER=$(awk "BEGIN {print $TOTAL_KEYPAIR + $TOTAL_STAKE}")
+        
+        echo "  Wallets found: $WALLET_COUNT"
+        echo
+        
+        # Display each wallet's balance
+        while IFS=':' read -r TYPE WALLET_NAME BALANCE STAKE_BAL; do
+            [[ "$TYPE" != "WALLET" ]] && continue
+            
+            printf "    %-25s" "$WALLET_NAME"
+            
+            if [[ "$BALANCE" != "0" ]]; then
+                printf "  💰 %-12s" "$BALANCE SOL"
+            else
+                printf "  💰 %-12s" "0 SOL"
+            fi
+            
+            if [[ "$STAKE_BAL" != "0" ]]; then
+                printf "  📊 %s SOL" "$STAKE_BAL"
+            fi
+            
+            echo
+        done <<< "$RESULTS"
+        
+        echo
+        echo "  ────────────────────────────────────────"
+        echo "  Keypair Total:  $TOTAL_KEYPAIR SOL"
+        echo "  Staked Total:   $TOTAL_STAKE SOL"
+        echo "  ════════════════════════════════════════"
+        echo "  Server Total:   $TOTAL_SERVER SOL"
+        echo
+        
+        # Add to grand totals
+        GRAND_TOTAL_KEYPAIR=$(awk "BEGIN {print $GRAND_TOTAL_KEYPAIR + $TOTAL_KEYPAIR}")
+        GRAND_TOTAL_STAKE=$(awk "BEGIN {print $GRAND_TOTAL_STAKE + $TOTAL_STAKE}")
+        GRAND_TOTAL_ALL=$(awk "BEGIN {print $GRAND_TOTAL_ALL + $TOTAL_SERVER}")
+        
+        ((SUCCESS_COUNT++))
+    else
+        echo "  ❌ Error processing server"
+        echo
+    fi
+    
+done < "$HOSTS_FILE"
+
+# Print grand summary
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "📊 GRAND SUMMARY"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Servers Checked:      $SUCCESS_COUNT / $SERVER_COUNT"
+echo "Total Keypair:        $GRAND_TOTAL_KEYPAIR SOL"
+echo "Total Staked:         $GRAND_TOTAL_STAKE SOL"
+echo "════════════════════════════════════════════"
+echo "GRAND TOTAL:          $GRAND_TOTAL_ALL SOL"
+echo "════════════════════════════════════════════"
